@@ -1,28 +1,55 @@
 #!/usr/bin/env node
-'use strict';
 
-require('dotenv').config({ quiet: true });
+import 'dotenv/config';
 
-const fs = require('node:fs');
-const path = require('node:path');
-const readline = require('node:readline/promises');
-const { format } = require('node:util');
-const { Client, GatewayIntentBits, REST, Routes } = require('discord.js');
+import fs from 'node:fs';
+import path from 'node:path';
+import readline from 'node:readline/promises';
+import { format } from 'node:util';
+import { Client, GatewayIntentBits, REST, Routes, type Guild } from 'discord.js';
 
 //=-- How long to wait for the WebSocket login before giving up.
 const LOGIN_TIMEOUT_MS = 15000;
 
+//=-- This package's base name, declared as "pkg-base-name" in package.json.
+//=-- It names this run's log files and lets the walk-up check that a
+//=-- package.json found above the script really belongs to this tool, so
+//=-- logs can never land in an unrelated project that merely sits above it.
+const PACKAGE_BASE_NAME = 'discord-bot-cleanup';
+
+/** Minimal shape of a registered application command as returned by the REST API. */
+interface ApiCommand {
+	name: string;
+}
+
+/** Per guild set of registered commands, gathered into a removal plan. */
+interface GuildPlan {
+	id: string;
+	name: string;
+	commands: ApiCommand[];
+}
+
+/** Parsed command line and environment configuration. */
+interface Args {
+	token: string | null;
+	force: boolean;
+	help: boolean;
+	guildId: string | null;
+	leave: boolean;
+	guildSource: 'none' | 'command line' | 'environment';
+	leaveSource: 'none' | 'command line' | 'environment';
+}
+
 /**
  * Parses command line arguments.
- * @param {string[]} argv - Raw process.argv.
- * @returns {{token: string|null, force: boolean, help: boolean, guildId: string|null, leave: boolean, guildSource: string, leaveSource: string}} Parsed arguments.
+ * @param argv - Raw process.argv.
  */
-function parseArgs(argv) {
-	/** @type {{token: string|null, force: boolean, help: boolean, guildId: string|null, leave: boolean, guildSource: string, leaveSource: string}} */
-	const args = { token: null, force: false, help: false, guildId: null, leave: false, guildSource: 'none', leaveSource: 'none' };
+function parseArgs(argv: string[]): Args {
+	const args: Args = { token: null, force: false, help: false, guildId: null, leave: false, guildSource: 'none', leaveSource: 'none' };
 
 	for (let i = 2; i < argv.length; i++) {
 		const arg = argv[i];
+		if (!arg) continue;
 
 		if (arg === '-h' || arg === '--help') {
 			args.help = true;
@@ -58,10 +85,9 @@ function parseArgs(argv) {
 
 /**
  * Resolves the bot token from the CLI, the environment or an interactive prompt.
- * @param {{token: string|null}} args - Parsed command line arguments.
- * @returns {Promise<string>} The trimmed bot token.
+ * @param args - Parsed command line arguments.
  */
-async function resolveToken(args) {
+async function resolveToken(args: Pick<Args, 'token'>): Promise<string> {
 	if (args.token) return args.token.trim();
 	if (process.env.DISCORD_TOKEN) return process.env.DISCORD_TOKEN.trim();
 
@@ -77,10 +103,9 @@ async function resolveToken(args) {
 /**
  * Logs a minimal client in and resolves once READY data has arrived, so the
  * application id and the guild list are known.
- * @param {string} token - Bot token to log in with.
- * @returns {Promise<Client<boolean>>} The logged-in client.
+ * @param token - Bot token to log in with.
  */
-function login(token) {
+function login(token: string): Promise<Client<true>> {
 	const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 	//=-- Keep late WebSocket errors from crashing the process as an unhandled event.
@@ -93,10 +118,11 @@ function login(token) {
 		);
 
 		//=-- discord.js renamed the ready event in recent releases, so listen for
-		//=-- both spellings; only one of the two is ever emitted.
+		//=-- both spellings; only one of the two is ever emitted. READY implies
+		//=-- the ready flag, so the client is narrowed to Client<true> here.
 		const onReady = () => {
 			clearTimeout(timer);
-			resolve(client);
+			resolve(client as Client<true>);
 		};
 		client.once('clientReady', onReady);
 		client.once('ready', onReady);
@@ -110,21 +136,20 @@ function login(token) {
 
 /**
  * Fetches every registered command (global and per guild) without deleting.
- * @param {REST} rest - REST client authenticated with the bot token.
- * @param {string} applicationId - The bot's application id.
- * @param {Client<boolean>} client - Logged-in client used to read the guild cache.
- * @returns {Promise<{globalCommands: Object[], guildPlans: {id: string, name: string, commands: Object[]}[]}>}
+ * @param rest - REST client authenticated with the bot token.
+ * @param applicationId - The bot's application id.
+ * @param client - Logged-in client used to read the guild cache.
  */
-async function fetchPlan(rest, applicationId, client) {
-	const globalCommands = await rest.get(Routes.applicationCommands(applicationId));
+async function fetchPlan(rest: REST, applicationId: string, client: Client<true>): Promise<{ globalCommands: ApiCommand[]; guildPlans: GuildPlan[] }> {
+	const globalCommands = (await rest.get(Routes.applicationCommands(applicationId))) as ApiCommand[];
 
-	const guildPlans = [];
+	const guildPlans: GuildPlan[] = [];
 	for (const guild of client.guilds.cache.values()) {
 		try {
-			const commands = await rest.get(Routes.applicationGuildCommands(applicationId, guild.id));
-			guildPlans.push({ id: guild.id, name: guild.name ?? 'Unknown guild', commands });
+			const commands = (await rest.get(Routes.applicationGuildCommands(applicationId, guild.id))) as ApiCommand[];
+			guildPlans.push({ id: guild.id, name: guild.name, commands });
 		} catch (error) {
-			console.error(`Could not fetch commands for guild ${guild.name ?? guild.id} (${guild.id}): ${error?.message ?? error}`);
+			console.error(`Could not fetch commands for guild ${guild.name} (${guild.id}): ${errorText(error)}`);
 		}
 	}
 
@@ -133,12 +158,11 @@ async function fetchPlan(rest, applicationId, client) {
 
 /**
  * Deletes a batch of commands by putting an empty list in their scope.
- * @param {REST} rest - REST client authenticated with the bot token.
- * @param {string} applicationId - The bot's application id.
- * @param {string|null} [guildId] - Guild id for guild-scoped commands, omit for global.
- * @returns {Promise<void>}
+ * @param rest - REST client authenticated with the bot token.
+ * @param applicationId - The bot's application id.
+ * @param guildId - Guild id for guild-scoped commands, omit for global.
  */
-async function clearScope(rest, applicationId, guildId = null) {
+async function clearScope(rest: REST, applicationId: string, guildId: string | null = null): Promise<void> {
 	if (guildId === null) {
 		await rest.put(Routes.applicationCommands(applicationId), { body: [] });
 	} else {
@@ -149,10 +173,9 @@ async function clearScope(rest, applicationId, guildId = null) {
 /**
  * Renders a comma separated list of command names for log output.
  * Very long lists are truncated.
- * @param {{name: string}[]} commands - Command objects as returned by the API.
- * @returns {string}
+ * @param commands - Command objects as returned by the API.
  */
-function formatNames(commands) {
+function formatNames(commands: readonly ApiCommand[]): string {
 	const names = commands.map((command) => command.name);
 	const shown = names.slice(0, 10).join(', ');
 	return names.length > 10 ? `${shown} … (+${names.length - 10} more)` : shown;
@@ -161,10 +184,9 @@ function formatNames(commands) {
 /**
  * Builds the timestamp portion of a log file name in local time,
  * e.g. "2026-10-13--3-33-pm".
- * @param {Date} now - The moment of the run.
- * @returns {string}
+ * @param now - The moment of the run.
  */
-function logTimestamp(now) {
+function logTimestamp(now: Date): string {
 	const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
 	const half = now.getHours() >= 12 ? 'pm' : 'am';
 	const hours = now.getHours() % 12 || 12;
@@ -175,29 +197,67 @@ function logTimestamp(now) {
 
 /**
  * Masks a bot token so the secret never reaches stdout or the log.
- * @param {string|null|undefined} token
- * @returns {string} e.g. "****abcd".
  */
-function maskToken(token) {
+function maskToken(token: string | null | undefined): string {
 	if (!token) return '(none)';
 	return `****${token.slice(-4)}`;
 }
 
 /**
- * Creates the log folder next to the script and redirects all console output
+ * Renders the message of an unknown caught value, so strict `catch (error)`
+ * blocks can be printed without downcasting.
+ */
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Finds the folder holding this script's own package.json by walking up from
+ * the script, the way `src/` runs and compiled `dist/` runs agree on one
+ * root. A package.json merely sitting above the script is not proof that it
+ * belongs to this tool — a copy placed inside another project would
+ * otherwise log into that project — so the owner is confirmed via its
+ * `pkg-base-name` field matching {@link PACKAGE_BASE_NAME}.
+ *
+ * When no owned package.json is found anywhere above the script (no
+ * package.json at all, a foreign one, or an unreadable one), the fallback is
+ * the folder the script itself lives in, so the run still gets its logs.
+ */
+function projectRoot(): string {
+	let dir = __dirname;
+	for (;;) {
+		const manifestPath = path.join(dir, 'package.json');
+		if (fs.existsSync(manifestPath)) {
+			try {
+				const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+				if (manifest['pkg-base-name'] === PACKAGE_BASE_NAME) return dir;
+			} catch {
+				//=-- Unreadable or malformed manifest: treat it as "not ours" and keep walking.
+			}
+		}
+
+		const parent = path.dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+
+	return __dirname;
+}
+
+/**
+ * Creates the log folder at the project root and redirects all console output
  * into this run's log file, so the file ends up identical to stdout.
  * Names look like "discord-bot-cleanup--log--2026-10-13--3-33-pm.log";
  * a second run within the same minute gets a "-2", "-3", … suffix.
- * @returns {string} Absolute path of the active log file.
  */
-function startRunLog() {
-	const dir = path.join(__dirname, 'log');
+function startRunLog(): string {
+	const dir = path.join(projectRoot(), 'log');
 	fs.mkdirSync(dir, { recursive: true });
 
-	let filePath = null;
+	let filePath: string | null = null;
 	for (let attempt = 1; attempt <= 100; attempt++) {
 		const suffix = attempt === 1 ? '' : `-${attempt}`;
-		const candidate = path.join(dir, `discord-bot-cleanup--log--${logTimestamp(new Date())}${suffix}.log`);
+		const candidate = path.join(dir, `${PACKAGE_BASE_NAME}--log--${logTimestamp(new Date())}${suffix}.log`);
 		if (!fs.existsSync(candidate)) {
 			filePath = candidate;
 			break;
@@ -206,10 +266,12 @@ function startRunLog() {
 	if (!filePath) throw new Error('Could not pick a unique log file name.');
 
 	//=-- Mirror every console call into the run file, keeping console
-	//=-- formatting (multi-part lines, %s placeholders) intact.
-	for (const name of ['log', 'error', 'warn']) {
-		const original = console[name].bind(console);
-		console[name] = (...parts) => {
+	//=-- formatting (multi-part lines, %s placeholders) intact. The record
+	//=-- cast is needed because console.log/warn/error have distinct overloads.
+	const consoleRef = console as unknown as Record<'log' | 'warn' | 'error', (...parts: unknown[]) => void>;
+	for (const name of ['log', 'warn', 'error'] as const) {
+		const original = consoleRef[name].bind(consoleRef);
+		consoleRef[name] = (...parts: unknown[]) => {
 			original(...parts);
 			fs.appendFileSync(filePath, `${format(...parts)}\n`);
 		};
@@ -221,13 +283,12 @@ function startRunLog() {
 /**
  * Prints the run header: the exact invocation plus the effective
  * configuration. The token is always shown masked.
- * @param {string} filePath - This run's log file.
- * @param {string[]} argv - Raw process.argv.
- * @param {{token: string|null, force: boolean, help: boolean, guildId: string|null, leave: boolean, guildSource: string, leaveSource: string}} args - Parsed arguments.
- * @param {string} tokenSource - Where the token will come from.
- * @returns {void}
+ * @param filePath - This run's log file.
+ * @param argv - Raw process.argv.
+ * @param args - Parsed arguments.
+ * @param tokenSource - Where the token will come from.
  */
-function printRunHeader(filePath, argv, args, tokenSource) {
+function printRunHeader(filePath: string, argv: string[], args: Args, tokenSource: string): void {
 	let token;
 	if (args.token) {
 		token = `${maskToken(args.token)} (${tokenSource})`;
@@ -254,11 +315,11 @@ function printRunHeader(filePath, argv, args, tokenSource) {
 
 /**
  * Asks the user to confirm an action twice before it is executed.
- * @param {string} question - The main question to ask.
- * @param {boolean} force - When true, confirmation is skipped (--yes was passed).
- * @returns {Promise<boolean>} Whether the user confirmed both times.
+ * @param question - The main question to ask.
+ * @param force - When true, confirmation is skipped (--yes was passed).
+ * @returns Whether the user confirmed both times.
  */
-async function confirmTwice(question, force) {
+async function confirmTwice(question: string, force: boolean): Promise<boolean> {
 	if (force) return true;
 
 	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -280,9 +341,8 @@ async function confirmTwice(question, force) {
 /**
  * Entry point: resolves the token, logs in, then removes the matching commands
  * (and optionally leaves a guild, when --leave is used with --guild).
- * @returns {Promise<void>}
  */
-async function main() {
+async function main(): Promise<void> {
 	const args = parseArgs(process.argv);
 
 	//=-- Begin the run log first so every run (including --help and later
@@ -317,6 +377,8 @@ async function main() {
 
 	console.log('Logging in to Discord…');
 	const client = await login(token);
+	if (!client.user) throw new Error('Discord reported READY but did not provide the bot user.');
+
 	console.log(`Logged in as ${client.user.tag} (application ${client.application?.id ?? client.user.id}).`);
 
 	try {
@@ -324,7 +386,7 @@ async function main() {
 		const applicationId = client.application?.id ?? client.user.id;
 
 		//=-- Validate the guild scope up front so unknown guilds fail before anything happens.
-		let targetGuild = null;
+		let targetGuild: Guild | null = null;
 		if (args.guildId) {
 			targetGuild = client.guilds.cache.get(args.guildId) ?? null;
 			if (!targetGuild) {
@@ -333,10 +395,10 @@ async function main() {
 		}
 
 		//=-- Snapshot what is registered before touching anything.
-		let globalCommands = [];
-		let guildPlans = [];
+		let globalCommands: ApiCommand[] = [];
+		let guildPlans: GuildPlan[] = [];
 		if (targetGuild) {
-			const commands = await rest.get(Routes.applicationGuildCommands(applicationId, targetGuild.id));
+			const commands = (await rest.get(Routes.applicationGuildCommands(applicationId, targetGuild.id))) as ApiCommand[];
 			guildPlans.push({ id: targetGuild.id, name: targetGuild.name, commands });
 		} else {
 			const plan = await fetchPlan(rest, applicationId, client);
@@ -376,7 +438,7 @@ async function main() {
 					removed += plan.commands.length;
 					console.log(`Removed ${plan.commands.length} command(s) from ${plan.name} (${plan.id}): ${formatNames(plan.commands)}`);
 				} catch (error) {
-					console.error(`Failed to remove commands from ${plan.name} (${plan.id}): ${error?.message ?? error}`);
+					console.error(`Failed to remove commands from ${plan.name} (${plan.id}): ${errorText(error)}`);
 				}
 			}
 
@@ -411,12 +473,11 @@ async function main() {
 
 /**
  * Prints how to invoke the script.
- * @returns {void}
  */
-function printUsage() {
+function printUsage(): void {
 	console.log(`Usage:
-  node index.js <bot token> [options]
-  node index.js                (prompts for the token, or reads DISCORD_TOKEN)
+  node dist/index.js <bot token> [options]
+  npm start                     (prompts for the token, or reads DISCORD_TOKEN)
 
 Options:
   -g, --guild <id>   Only clean the given guild (global commands are left alone)
@@ -431,16 +492,16 @@ DISCORD_TOKEN, DISCORD_GUILD_ID and DISCORD_LEAVE_GUILD (1/true/yes) can
 also be set in the environment or a .env file; CLI flags take priority.
 
 Every run writes a log file like log/discord-bot-cleanup--log--2026-10-13--3-33-pm.log
-next to index.js, containing the arguments, configuration and all output.
+at the project root, containing the arguments, configuration and all output.
 Tokens are redacted there (only the last 4 characters are kept).
 
 Examples:
-  node index.js <token>                          remove global + all guild commands
-  node index.js <token> --guild 123456789012345678   remove that guild's commands only
-  node index.js <token> --guild 123456789012345678 --leave  remove them, then leave`);
+  node dist/index.js <token>                          remove global + all guild commands
+  node dist/index.js <token> --guild 123456789012345678   remove that guild's commands only
+  node dist/index.js <token> --guild 123456789012345678 --leave  remove them, then leave`);
 }
 
-main().catch((error) => {
-	console.error(error?.message ?? error);
+main().catch((error: unknown) => {
+	console.error(errorText(error));
 	process.exitCode = 1;
 });
