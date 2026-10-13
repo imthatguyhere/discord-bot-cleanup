@@ -43,12 +43,13 @@ The token can be found/reset in the [Discord Developer Portal](https://discord.c
 
 ## What it does
 
-1. Logs in a minimal client (only the `Guilds` intent, no message/presence intents) to resolve your application id and the list of guilds your bot is in.
-2. Fetches every registered application command — the global set plus one batch per guild (or only the given guild's set when `--guild` is used).
-3. Shows a summary and asks for **double confirmation** before deleting anything (skipped when `--yes` is passed).
-4. Deletes the commands by pushing an empty command list to the global endpoint and to each guild endpoint.
-5. If `--leave` was passed together with `--guild`, asks for **double confirmation** again and then makes the bot leave that guild.
-6. Logs out.
+1. Creates a `log/` folder next to `index.js` (if missing) and opens this run's log file with a name like `discord-bot-cleanup--log--2026-10-13--3-33-pm.log`. It then prints a header to the terminal — the command line and the effective configuration — and from that moment everything printed to the screen is mirrored into the log.
+2. Logs in a minimal client (only the `Guilds` intent, no message/presence intents) to resolve your application id and the list of guilds your bot is in.
+3. Fetches every registered application command — the global set plus one batch per guild (or only the given guild's set when `--guild` is used).
+4. Shows a summary and asks for **double confirmation** before deleting anything (skipped when `--yes` is passed).
+5. Deletes the commands by pushing an empty command list to the global endpoint and to each guild endpoint.
+6. If `--leave` was passed together with `--guild`, asks for **double confirmation** again and then makes the bot leave that guild.
+7. Logs out.
 
 ## Notes
 
@@ -57,4 +58,5 @@ The token can be found/reset in the [Discord Developer Portal](https://discord.c
 - `--guild` scopes the cleanup to that one guild — global commands and other guilds are untouched.
 - `--leave` requires `--guild`; the bot cannot leave a guild it owns (ownership must be transferred or the guild deleted first).
 - Guild commands are discovered from the guild cache populated at login, so the bot must still be a member of those guilds. (A bot's guild commands are removed automatically from guilds it leaves, so this is rarely an issue.)
-- The token is only read from the CLI argument, the `DISCORD_TOKEN` environment variable/`.env` file, or an interactive prompt — it is never logged or written anywhere.
+- Every run writes a timestamped log file in the `log/` folder next to the script (the folder is git-ignored) capturing the command line, effective configuration and all output.
+- The token is only read from the CLI argument, the `DISCORD_TOKEN` environment variable/`.env` file, or an interactive prompt — and it is never printed unredacted: in the run log only its last four characters appear.

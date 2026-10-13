@@ -3,7 +3,10 @@
 
 require('dotenv').config({ quiet: true });
 
+const fs = require('node:fs');
+const path = require('node:path');
 const readline = require('node:readline/promises');
+const { format } = require('node:util');
 const { Client, GatewayIntentBits, REST, Routes } = require('discord.js');
 
 //=-- How long to wait for the WebSocket login before giving up.
@@ -12,11 +15,11 @@ const LOGIN_TIMEOUT_MS = 15000;
 /**
  * Parses command line arguments.
  * @param {string[]} argv - Raw process.argv.
- * @returns {{token: string|null, force: boolean, help: boolean, guildId: string|null, leave: boolean}} Parsed arguments.
+ * @returns {{token: string|null, force: boolean, help: boolean, guildId: string|null, leave: boolean, guildSource: string, leaveSource: string}} Parsed arguments.
  */
 function parseArgs(argv) {
-	/** @type {{token: string|null, force: boolean, help: boolean, guildId: string|null, leave: boolean}} */
-	const args = { token: null, force: false, help: false, guildId: null, leave: false };
+	/** @type {{token: string|null, force: boolean, help: boolean, guildId: string|null, leave: boolean, guildSource: string, leaveSource: string}} */
+	const args = { token: null, force: false, help: false, guildId: null, leave: false, guildSource: 'none', leaveSource: 'none' };
 
 	for (let i = 2; i < argv.length; i++) {
 		const arg = argv[i];
@@ -27,10 +30,12 @@ function parseArgs(argv) {
 			args.force = true;
 		} else if (arg === '--leave') {
 			args.leave = true;
+			args.leaveSource = 'command line';
 		} else if (arg === '-g' || arg === '--guild') {
 			const value = argv[++i];
 			if (!value || value.startsWith('-')) throw new Error(`Option ${arg} requires a guild id.`);
 			args.guildId = value;
+			args.guildSource = 'command line';
 		} else if (arg.startsWith('-')) {
 			throw new Error(`Unknown option "${arg}".`);
 		} else {
@@ -41,9 +46,11 @@ function parseArgs(argv) {
 	//=-- CLI flags win over environment variables.
 	if (!args.guildId && process.env.DISCORD_GUILD_ID) {
 		args.guildId = process.env.DISCORD_GUILD_ID.trim();
+		args.guildSource = 'environment';
 	}
 	if (!args.leave && process.env.DISCORD_LEAVE_GUILD) {
 		args.leave = /^(1|true|y|yes)$/i.test(process.env.DISCORD_LEAVE_GUILD.trim());
+		args.leaveSource = 'environment';
 	}
 
 	return args;
@@ -152,6 +159,100 @@ function formatNames(commands) {
 }
 
 /**
+ * Builds the timestamp portion of a log file name in local time,
+ * e.g. "2026-10-13--3-33-pm".
+ * @param {Date} now - The moment of the run.
+ * @returns {string}
+ */
+function logTimestamp(now) {
+	const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
+	const half = now.getHours() >= 12 ? 'pm' : 'am';
+	const hours = now.getHours() % 12 || 12;
+	const minutes = String(now.getMinutes()).padStart(2, '0');
+
+	return `${date}--${hours}-${minutes}-${half}`;
+}
+
+/**
+ * Masks a bot token so the secret never reaches stdout or the log.
+ * @param {string|null|undefined} token
+ * @returns {string} e.g. "****abcd".
+ */
+function maskToken(token) {
+	if (!token) return '(none)';
+	return `****${token.slice(-4)}`;
+}
+
+/**
+ * Creates the log folder next to the script and redirects all console output
+ * into this run's log file, so the file ends up identical to stdout.
+ * Names look like "discord-bot-cleanup--log--2026-10-13--3-33-pm.log";
+ * a second run within the same minute gets a "-2", "-3", … suffix.
+ * @returns {string} Absolute path of the active log file.
+ */
+function startRunLog() {
+	const dir = path.join(__dirname, 'log');
+	fs.mkdirSync(dir, { recursive: true });
+
+	let filePath = null;
+	for (let attempt = 1; attempt <= 100; attempt++) {
+		const suffix = attempt === 1 ? '' : `-${attempt}`;
+		const candidate = path.join(dir, `discord-bot-cleanup--log--${logTimestamp(new Date())}${suffix}.log`);
+		if (!fs.existsSync(candidate)) {
+			filePath = candidate;
+			break;
+		}
+	}
+	if (!filePath) throw new Error('Could not pick a unique log file name.');
+
+	//=-- Mirror every console call into the run file, keeping console
+	//=-- formatting (multi-part lines, %s placeholders) intact.
+	for (const name of ['log', 'error', 'warn']) {
+		const original = console[name].bind(console);
+		console[name] = (...parts) => {
+			original(...parts);
+			fs.appendFileSync(filePath, `${format(...parts)}\n`);
+		};
+	}
+
+	return filePath;
+}
+
+/**
+ * Prints the run header: the exact invocation plus the effective
+ * configuration. The token is always shown masked.
+ * @param {string} filePath - This run's log file.
+ * @param {string[]} argv - Raw process.argv.
+ * @param {{token: string|null, force: boolean, help: boolean, guildId: string|null, leave: boolean, guildSource: string, leaveSource: string}} args - Parsed arguments.
+ * @param {string} tokenSource - Where the token will come from.
+ * @returns {void}
+ */
+function printRunHeader(filePath, argv, args, tokenSource) {
+	let token;
+	if (args.token) {
+		token = `${maskToken(args.token)} (${tokenSource})`;
+	} else if (process.env.DISCORD_TOKEN) {
+		token = `${maskToken(process.env.DISCORD_TOKEN)} (${tokenSource})`;
+	} else {
+		token = '(none yet — entered interactively during this run)';
+	}
+
+	const maskedArgv = args.token ? argv.map((part) => (part === args.token ? maskToken(args.token) : part)) : argv;
+
+	console.log('==============================');
+	console.log('discord-bot-cleanup — run started');
+	console.log(`Log file:           ${filePath}`);
+	console.log(`Node:               ${process.version}`);
+	console.log(`Command line:       ${maskedArgv.join(' ')}`);
+	console.log('Configuration:');
+	console.log(`  token:            ${token}`);
+	console.log(`  guild:            ${args.guildId ? `${args.guildId} (${args.guildSource})` : 'not set — global + every guild'}`);
+	console.log(`  leave guild:      ${args.leave ? `true (${args.leaveSource})` : 'false'}`);
+	console.log(`  force (--yes):    ${args.force ? 'true' : 'false'}`);
+	console.log('==============================');
+}
+
+/**
  * Asks the user to confirm an action twice before it is executed.
  * @param {string} question - The main question to ask.
  * @param {boolean} force - When true, confirmation is skipped (--yes was passed).
@@ -184,6 +285,12 @@ async function confirmTwice(question, force) {
 async function main() {
 	const args = parseArgs(process.argv);
 
+	//=-- Begin the run log first so every run (including --help and later
+	//=-- failures) gets a file; the header goes to both stdout and the log.
+	const tokenSource = args.token ? 'command line' : process.env.DISCORD_TOKEN ? 'environment' : 'interactive prompt';
+	const filePath = startRunLog();
+	printRunHeader(filePath, process.argv, args, tokenSource);
+
 	if (args.help) {
 		printUsage();
 		return;
@@ -204,6 +311,9 @@ async function main() {
 		process.exitCode = 1;
 		return;
 	}
+
+	//=-- Log which token is in use, but never the token itself.
+	console.log(`Token in use: ${maskToken(token)} (${tokenSource}).`);
 
 	console.log('Logging in to Discord…');
 	const client = await login(token);
@@ -319,6 +429,10 @@ confirmation twice unless --yes is passed.
 
 DISCORD_TOKEN, DISCORD_GUILD_ID and DISCORD_LEAVE_GUILD (1/true/yes) can
 also be set in the environment or a .env file; CLI flags take priority.
+
+Every run writes a log file like log/discord-bot-cleanup--log--2026-10-13--3-33-pm.log
+next to index.js, containing the arguments, configuration and all output.
+Tokens are redacted there (only the last 4 characters are kept).
 
 Examples:
   node index.js <token>                          remove global + all guild commands
