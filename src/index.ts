@@ -117,15 +117,15 @@ function login(token: string): Promise<Client<true>> {
 			LOGIN_TIMEOUT_MS,
 		);
 
-		//=-- discord.js renamed the ready event in recent releases, so listen for
-		//=-- both spellings; only one of the two is ever emitted. READY implies
-		//=-- the ready flag, so the client is narrowed to Client<true> here.
+		//=-- discord.js >=14.16 renamed the ready event to clientReady; listening
+		//=-- on the old "ready" name makes every login print a deprecation
+		//=-- warning (seen in run logs), so only the current name is registered.
+		//=-- Reaching it implies the ready flag, narrowing the client to Client<true>.
 		const onReady = () => {
 			clearTimeout(timer);
 			resolve(client as Client<true>);
 		};
 		client.once('clientReady', onReady);
-		client.once('ready', onReady);
 
 		client.login(token).catch((error) => {
 			clearTimeout(timer);
