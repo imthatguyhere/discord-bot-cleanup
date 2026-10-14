@@ -476,8 +476,8 @@ async function main(): Promise<void> {
  */
 function printUsage(): void {
 	console.log(`Usage:
+  npm start                     (builds, then runs this script; pass extra args after "--")
   node dist/index.js <bot token> [options]
-  npm start                     (prompts for the token, or reads DISCORD_TOKEN)
 
 Options:
   -g, --guild <id>   Only clean the given guild (global commands are left alone)
@@ -496,8 +496,8 @@ at the project root, containing the arguments, configuration and all output.
 Tokens are redacted there (only the last 4 characters are kept).
 
 Examples:
-  node dist/index.js <token>                          remove global + all guild commands
-  node dist/index.js <token> --guild 123456789012345678   remove that guild's commands only
+  npm start -- <token> --yes                            remove global + all guild commands
+  node dist/index.js <token> --guild 123456789012345678       remove that guild's commands only
   node dist/index.js <token> --guild 123456789012345678 --leave  remove them, then leave`);
 }
 
