@@ -12,21 +12,18 @@ Requires Node.js 18 or newer.
 
 ## Usage
 
+`npm start` compiles `src/` to `dist/` and then runs the compiled script. npm swallows extra arguments unless they come after a `--`:
+
 ```bash
-# Interactive: prompts for the token (builds first)
+# Interactive: prompts for the token (or reads DISCORD_TOKEN)
 npm start
 
-# Or pass the token directly (after "npm run build")
-node dist/index.js <bot token>
+# With a token and/or options, pass them after "--":
+npm start -- <bot token> --guild <guild id> --leave
 
-# Clean a single guild only (global commands are left alone)
-node dist/index.js <bot token> --guild <guild id>
-
-# Clean a single guild's commands, then leave that guild
-node dist/index.js <bot token> --guild <guild id> --leave
-
-# Skip all confirmation prompts (dangerous — for automation only)
-node dist/index.js <bot token> --yes
+# Equivalent without npm; needs a build once first:
+npm run build
+node dist/index.js <bot token> --guild <guild id> --yes
 ```
 
 You can also create a `.env` file (see `.env.example`) containing:
