@@ -480,10 +480,10 @@ function printUsage(): void {
   node dist/index.js <bot token> [options]
 
 Options:
-  -g, --guild <id>   Only clean the given guild (global commands are left alone)
-  --leave            Also make the bot leave that guild (requires --guild)
-  -y, --yes          Skip all confirmation prompts (dangerous)
-  -h, --help         Show this help
+  -g, --guild <guild id>   Only clean the given guild (global commands are left alone)
+  --leave                  Also make the bot leave that guild (requires --guild)
+  -y, --yes                Skip all confirmation prompts (dangerous)
+  -h, --help               Show this help
 
 Every destructive action (deleting commands, leaving a guild) asks for
 confirmation twice unless --yes is passed.
@@ -496,9 +496,9 @@ at the project root, containing the arguments, configuration and all output.
 Tokens are redacted there (only the last 4 characters are kept).
 
 Examples:
-  npm start -- <token> --yes                            remove global + all guild commands
-  node dist/index.js <token> --guild 123456789012345678       remove that guild's commands only
-  node dist/index.js <token> --guild 123456789012345678 --leave  remove them, then leave`);
+  npm start -- <bot token> --yes                        remove global + all guild commands
+  npm start -- <bot token> --guild <guild id>           remove that guild's commands only
+  npm start -- <bot token> --guild <guild id> --leave   remove them, then leave`);
 }
 
 main().catch((error: unknown) => {

@@ -34,7 +34,7 @@ DISCORD_GUILD_ID=123456789012345678
 DISCORD_LEAVE_GUILD=false
 ```
 
-`DISCORD_GUILD_ID` behaves like `--guild <id>`, and `DISCORD_LEAVE_GUILD` (set to `1`, `true`, `y` or `yes`) behaves like `--leave`. Command line flags always take priority over environment variables. Note that enabling the leave option never bypasses the double confirmation — you will still be asked twice before the bot actually leaves; only `--yes` skips all confirmations.
+`DISCORD_GUILD_ID` behaves like `--guild <guild id>`, and `DISCORD_LEAVE_GUILD` (set to `1`, `true`, `y` or `yes`) behaves like `--leave`. Command line flags always take priority over environment variables. Note that enabling the leave option never bypasses the double confirmation — you will still be asked twice before the bot actually leaves; only `--yes` skips all confirmations.
 
 The token can be found/reset in the [Discord Developer Portal](https://discord.com/developers/applications) under your application's **Bot** page.
 
